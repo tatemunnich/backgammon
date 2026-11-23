@@ -161,10 +161,17 @@ class NeuralNet:
         self.ew = tf.zeros(shape=(self.num_hidden, self.num_outputs))
         self.ev = tf.zeros(shape=(self.num_inputs, self.num_hidden, self.num_outputs))
 
+    # Starting weights are drawn from U(-INIT_RANGE, INIT_RANGE). About 27 inputs are active
+    # in a typical position, so +-0.1 keeps each hidden unit's input near 0, where the sigmoid
+    # is steepest and learns fastest, and starts the output near 0.5 (no opinion). The old
+    # +-1 range started units around +-3, already close to saturated.
+    INIT_RANGE = 0.1
+
     def randomize_weights(self):
-        self.hidden_weights = tf.Variable(tf.random.uniform(minval=-1., maxval=1.,
+        r = self.INIT_RANGE
+        self.hidden_weights = tf.Variable(tf.random.uniform(minval=-r, maxval=r,
                                                             shape=(self.num_inputs, self.num_hidden)))
-        self.second_weights = tf.Variable(tf.random.uniform(minval=-1., maxval=1.,
+        self.second_weights = tf.Variable(tf.random.uniform(minval=-r, maxval=r,
                                                             shape=(self.num_hidden, self.num_outputs)))
 
     def calculate(self, inputs):
