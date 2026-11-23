@@ -9,3 +9,6 @@
 /misc.xml
 *.xml
 *.iml
+
+# Training output
+checkpoints/

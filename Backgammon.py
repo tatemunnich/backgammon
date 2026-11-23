@@ -1,5 +1,8 @@
-import random
 import argparse
+import os
+import random
+
+import numpy as np
 
 from board.Board import Board, BLACK, WHITE, NONE
 from board.Dice import Dice
@@ -92,19 +95,19 @@ class Backgammon:
                 return winner, value
 
     @staticmethod
-    def train(network, iters, start_trial=0, verbose=False):
+    def train(network, iters, start_trial=0, verbose=False, save_every=1000, benchmark_games=15):
         p1, p2 = NeuralNetPlayer(BLACK, network, learning=True), NeuralNetPlayer(WHITE, network, learning=True)
         backgammon = Backgammon(p1, p2)
         for i in range(1, iters+1):
             winner, _ = backgammon.run()
             backgammon.reset()
             print("\rGame", i+start_trial, "finished", end="")
-            if i % 1000 == 0:
+            if i % save_every == 0:
                 p1.network.save()
                 p1.network.save_to_text(str(i+start_trial)+".txt")
                 p1.learning = False
-                print("After", i + start_trial, "rounds of training:")
-                Backgammon.benchmark(p1, TatePlayer(WHITE), 15)
+                print("\nAfter", i + start_trial, "rounds of training:")
+                Backgammon.benchmark(p1, TatePlayer(WHITE), benchmark_games)
                 p1.learning = True
 
     @staticmethod
@@ -118,8 +121,8 @@ class Backgammon:
             scores[winner] += value
             wins[winner] += 1
             back.reset()
-        print(scores)
-        print(wins)
+        print("\nPoints:", scores)
+        print("Wins:  ", wins)
         return scores
 
 
@@ -130,10 +133,48 @@ def runRandomTime():
         b.reset()
 
 
+def last_saved_game(checkpoint_dir):
+    """Highest game number among the <N>.txt snapshots in checkpoint_dir, or 0 if none."""
+    numbers = [int(name[:-4]) for name in os.listdir(checkpoint_dir)
+               if name.endswith(".txt") and name[:-4].isdigit()] if os.path.isdir(checkpoint_dir) else []
+    return max(numbers, default=0)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train the TD(lambda) backgammon network by self-play.")
+    parser.add_argument("--games", type=int, default=100000, help="number of self-play games to train for")
+    parser.add_argument("--outputs", type=int, choices=[1, 4], default=4,
+                        help="4: black win, black gammon, white win, white gammon; 1: black win only")
+    parser.add_argument("--checkpoint-dir", default="./checkpoints/td_4out",
+                        help="where checkpoints (ckpt-N.npz) and <game>.txt snapshots are saved")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue from the latest checkpoint in --checkpoint-dir")
+    parser.add_argument("--start-game", type=int, default=None,
+                        help="game number to count from (default: 0, or the last snapshot when resuming)")
+    parser.add_argument("--save-every", type=int, default=1000, help="save and benchmark every N games")
+    parser.add_argument("--benchmark-games", type=int, default=15, help="games against Tate Jr. per benchmark")
+    parser.add_argument("--seed", type=int, default=None, help="random seed, for repeatable runs")
+    args = parser.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+
+    net = NeuralNet(checkpoint_dir=args.checkpoint_dir, num_outputs=args.outputs)
+    if args.resume:
+        net.load()
+        start = last_saved_game(args.checkpoint_dir) if args.start_game is None else args.start_game
+        print("Resuming", net.num_outputs, "output network from", args.checkpoint_dir, "at game", start)
+    else:
+        if net.checkpoint_numbers():
+            parser.error(args.checkpoint_dir + " already has checkpoints. Use --resume to continue that run, "
+                                               "or pick another --checkpoint-dir.")
+        start = args.start_game or 0
+        print("Starting a new", args.outputs, "output network in", args.checkpoint_dir)
+
+    Backgammon.train(net, args.games, start_trial=start,
+                     save_every=args.save_every, benchmark_games=args.benchmark_games)
+
+
 if __name__ == "__main__":
-    # cProfile.run('runRandomTime()')
-    # # s = "0;1;0;1;1;Crazy Carl;gnubg;0;0;0;1;1;0;8;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;-2;0;0;0;"
-    net = NeuralNet(checkpoint_dir="./checkpoints/checkpoints_1", num_outputs=1)
-    net.load()
-    print(net.hidden_weights)
-    Backgammon.train(net, 9000, start_trial=21000)
+    main()
