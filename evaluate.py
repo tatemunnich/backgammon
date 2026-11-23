@@ -7,7 +7,9 @@ Examples:
     python evaluate.py                                   # latest checkpoint vs previous and Random
     python evaluate.py --checkpoints all                 # every checkpoint in the folder
     python evaluate.py --opponents previous,tate --tate-games 200
-    python evaluate.py --watch                           # keep evaluating new checkpoints as training saves them
+    python evaluate.py --watch                           # the latest checkpoint, then each new one training saves
+    python evaluate.py --watch --from 20                 # ckpt-20 onward, then each new one
+    python evaluate.py --checkpoints all --from 20       # ckpt-20 through the latest
 
 Results are printed and appended to <checkpoint-dir>/eval.csv, with the learning rates the
 checkpoint was trained with (blank for checkpoints saved before rates were recorded) and the
@@ -184,6 +186,10 @@ def main():
     parser.add_argument("--checkpoint-dir", default="./checkpoints/td_4out")
     parser.add_argument("--checkpoints", default="latest",
                         help="latest (default), all, or a comma list of numbers like 3,5")
+    parser.add_argument("--from", dest="start", type=int, default=None,
+                        help="skip checkpoints numbered below this. With --watch the default is the latest "
+                             "checkpoint when it starts, so it doesn't go back over earlier ones; --from 1 "
+                             "evaluates them all")
     parser.add_argument("--opponents", default="previous,random",
                         help="comma list of: previous, random, tate, ckpt-N (default previous,random)")
     parser.add_argument("--games", type=int, default=400, help="games per opponent (default 400 = 200 pairs)")
@@ -206,18 +212,25 @@ def main():
         available = probe.checkpoint_numbers()
         if not available:
             raise SystemExit("No checkpoints (ckpt-N.npz) in " + args.checkpoint_dir)
-        for num in pick_checkpoints(args.checkpoints, available):
+        picked = [n for n in pick_checkpoints(args.checkpoints, available) if args.start is None or n >= args.start]
+        if not picked:
+            raise SystemExit("No checkpoints from ckpt-%d on; latest is ckpt-%d" % (args.start, available[-1]))
+        for num in picked:
             evaluate_checkpoint(args, num, csv_path, done, available)
         print("Results appended to", csv_path)
         return
 
-    print("Watching", args.checkpoint_dir, "for new checkpoints (Ctrl-C to stop). Results go to", csv_path)
+    if args.start is None:
+        existing = probe.checkpoint_numbers()
+        args.start = existing[-1] if existing else 1
+    print("Watching", args.checkpoint_dir, "from ckpt-%d for new checkpoints (Ctrl-C to stop). Results go to"
+          % args.start, csv_path)
     evaluated = set()  # checkpoints handled in this session; finished (checkpoint, opponent) pairs are skipped via `done`
     try:
         while True:
             available = probe.checkpoint_numbers()
             for num in available:
-                if num not in evaluated:
+                if num >= args.start and num not in evaluated:
                     evaluate_checkpoint(args, num, csv_path, done, available)
                     evaluated.add(num)
             time.sleep(args.poll)
