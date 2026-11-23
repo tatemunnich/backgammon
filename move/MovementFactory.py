@@ -130,16 +130,19 @@ def get_moves(color, distance_dict, starting_loc, root):
 
     # # Able to bear off
     elif board.allInHome(color):
-        try:
-            move = TakeOffMovement(color, die_1, starting_loc)
-            scratch = move.apply(board)
-            move_node = MoveNode(root.name + " " + str(move), scratch, die=die_1, deep=root.deep+1)
-            root.children.append(move_node)
-            distance_dict_1 = update_distance_dict(die_1, distance_dict)
-            new_start = get_next_location(scratch.getCheckers(color), starting_loc, color)
-            get_moves(color, distance_dict_1, new_start, move_node)
-        except IllegalMoveException:
-            pass
+        # Try bearing off with each die. (Trying only the larger one missed plays where the
+        # larger die can't be used at all and the smaller die bears a checker off.)
+        for die in ([die_1] if die_1 == die_2 else [die_1, die_2]):
+            try:
+                move = TakeOffMovement(color, die, starting_loc)
+                scratch = move.apply(board)
+                move_node = MoveNode(root.name + " " + str(move), scratch, die=die, deep=root.deep+1)
+                root.children.append(move_node)
+                distance_dict_1 = update_distance_dict(die, distance_dict)
+                new_start = get_next_location(scratch.getCheckers(color), starting_loc, color)
+                get_moves(color, distance_dict_1, new_start, move_node)
+            except IllegalMoveException:
+                pass
         do_normal_move(color, distance_dict, starting_loc, root, board, die_1, die_2)
 
     # All other cases: only normal moves remain
