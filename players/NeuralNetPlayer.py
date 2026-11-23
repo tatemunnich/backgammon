@@ -148,10 +148,11 @@ class NeuralNet:
 
     def __init__(self, checkpoint_dir, num_inputs=198, num_hidden=40, num_outputs=1,
                  hidden_weights=None, second_weights=None, save_traces=False,
-                 alpha=None, beta=None, lambd=DEFAULT_LAMBDA):
+                 alpha=None, beta=None, lambd=None):
         """alpha: hidden-layer learning rate (default 1/num_inputs).
         beta: output-layer learning rate (default 1/num_hidden).
-        lambd: eligibility trace decay per step."""
+        lambd: eligibility trace decay per step (default DEFAULT_LAMBDA).
+        Any left as None are taken from the checkpoint by load(), when it recorded them."""
         self.inputs = None  # shape (1, num_inputs)
         self.hidden_outputs = None  # shape (1, num_hidden)
         self.outputs = None  # shape (1, num_outputs)
@@ -172,6 +173,7 @@ class NeuralNet:
         self.beta = beta
         self.lambd = lambd
         self.games_trained = None  # set by load() when the checkpoint recorded it
+        self.saved_rates = None  # (alpha, beta, lambda) recorded in the loaded checkpoint, if any
         self.reset_traces()
 
     @property
@@ -179,7 +181,8 @@ class NeuralNet:
         """(alpha, beta, lambda) actually used by backprop()."""
         alpha = self.alpha if self.alpha is not None else 1 / self.num_inputs
         beta = self.beta if self.beta is not None else 1 / self.num_hidden
-        return alpha, beta, self.lambd
+        lambd = self.lambd if self.lambd is not None else self.DEFAULT_LAMBDA
+        return alpha, beta, lambd
 
     def reset_traces(self):
         """Zero the eligibility traces. Call at the start of every training game."""
@@ -222,13 +225,15 @@ class NeuralNet:
         return sorted(numbers)
 
     def save(self, games=None):
-        """Write the next numbered checkpoint. `games` (games trained so far) is stored with it."""
+        """Write the next numbered checkpoint. `games` (games trained so far) is stored with it,
+        and so are the learning rates the weights were trained with."""
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         numbers = self.checkpoint_numbers()
         num = numbers[-1] + 1 if numbers else 1
         arrays = {"hidden": self.hidden_weights, "second": self.second_weights}
         if games is not None:
             arrays["games"] = np.array(games)
+        arrays.update(zip(("alpha", "beta", "lambda"), map(np.array, self.learning_rates)))
         if self.save_traces:
             arrays.update(ew=self.ew, ev=self.ev)
         path = os.path.join(self.checkpoint_dir, "ckpt-%d.npz" % num)
@@ -265,6 +270,17 @@ class NeuralNet:
         self.num_inputs, self.num_hidden = self.hidden_weights.shape
         self.num_outputs = self.second_weights.shape[1]
         self.games_trained = int(saved["games"]) if "games" in saved else None
+        # Learning rates the checkpoint was trained with (None for older checkpoints). Rates not
+        # set explicitly continue from the checkpoint, so --resume keeps the run's rates.
+        self.saved_rates = tuple(float(saved[k]) for k in ("alpha", "beta", "lambda")) \
+            if all(k in saved for k in ("alpha", "beta", "lambda")) else None
+        if self.saved_rates:
+            if self.alpha is None:
+                self.alpha = self.saved_rates[0]
+            if self.beta is None:
+                self.beta = self.saved_rates[1]
+            if self.lambd is None:
+                self.lambd = self.saved_rates[2]
         if "ew" in saved and "ev" in saved:
             self.ew = np.array(saved["ew"], dtype=float)
             self.ev = np.array(saved["ev"], dtype=float)

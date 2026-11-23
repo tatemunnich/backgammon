@@ -1,6 +1,10 @@
 import argparse
+import json
 import os
 import random
+import subprocess
+import sys
+from datetime import datetime
 
 import numpy as np
 
@@ -105,13 +109,18 @@ class Backgammon:
                 return winner, value
 
     @staticmethod
-    def train(network, iters, start_trial=0, verbose=False, save_every=1000, benchmark_games=15):
+    def train(network, iters, start_trial=0, verbose=False, save_every=1000, benchmark_games=15, seed=None):
         """Self-play training. Every save_every games: save a checkpoint and a <game>.txt snapshot,
         then (if benchmark_games > 0) play that many games against Tate Jr. For larger, less noisy
-        comparisons, use --benchmark-games 0 and run evaluate.py alongside."""
+        comparisons, use --benchmark-games 0 and run evaluate.py alongside.
+
+        With a seed, game N's dice come from (seed, N), so every game gets fresh rolls, a run can be
+        repeated exactly, and a resumed run carries on instead of replaying the rolls it started with."""
         p1, p2 = NeuralNetPlayer(BLACK, network, learning=True), NeuralNetPlayer(WHITE, network, learning=True)
         backgammon = Backgammon(p1, p2)
         for i in range(1, iters+1):
+            if seed is not None:
+                backgammon.set_dice_seed(training_dice_seed(seed, i + start_trial))
             winner, _ = backgammon.run()
             backgammon.reset()
             print("\rGame", i+start_trial, "finished", end="")
@@ -153,6 +162,30 @@ def runRandomTime():
         b.reset()
 
 
+def training_dice_seed(seed, game):
+    """Dice seed for training game `game`. The "train:" prefix keeps these streams apart from the
+    ones evaluate.py plays with, so evaluation never replays a training game's rolls."""
+    return "train:%d:%d" % (seed, game)
+
+
+def git_commit():
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                              cwd=os.path.dirname(os.path.abspath(__file__)), check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def log_session(checkpoint_dir, entry):
+    """Append one training session to <checkpoint_dir>/history.jsonl (one JSON object per line).
+
+    Together the lines give the run's rate history: each session's rates apply from its
+    start_game until the next session's start_game. Each checkpoint also stores its own rates."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    with open(os.path.join(checkpoint_dir, "history.jsonl"), "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 def last_saved_game(checkpoint_dir):
     """Highest game number among the <N>.txt snapshots in checkpoint_dir, or 0 if none."""
     numbers = [int(name[:-4]) for name in os.listdir(checkpoint_dir)
@@ -173,22 +206,28 @@ def main():
                         help="game number to count from (default: 0, or the last snapshot when resuming)")
     parser.add_argument("--save-every", type=int, default=1000, help="save (and benchmark) every N games")
     parser.add_argument("--benchmark-games", type=int, default=15, help="games against Tate Jr. after each save; 0 to skip (use evaluate.py instead)")
-    parser.add_argument("--seed", type=int, default=None, help="random seed, for repeatable runs")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="seed for the starting weights and the dice (default: a new random seed, "
+                             "printed and saved in history.jsonl so the run can be repeated)")
     parser.add_argument("--alpha", type=float, default=None,
                         help="hidden-layer learning rate (default 1/198, about 0.005)")
     parser.add_argument("--beta", type=float, default=None,
                         help="output-layer learning rate (default 1/40 = 0.025)")
-    parser.add_argument("--lambda", dest="lambd", type=float, default=NeuralNet.DEFAULT_LAMBDA,
-                        help="eligibility trace decay, 0-1 (default %(default)s)")
+    parser.add_argument("--lambda", dest="lambd", type=float, default=None,
+                        help="eligibility trace decay, 0-1 (default %s)" % NeuralNet.DEFAULT_LAMBDA)
     args = parser.parse_args()
+    # Rates left unset continue from the checkpoint when resuming (or use the defaults).
 
-    if args.seed is not None:
-        random.seed(args.seed)
-        np.random.seed(args.seed)
+    if args.seed is None:
+        args.seed = random.SystemRandom().randrange(2 ** 31)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
 
     net = NeuralNet(checkpoint_dir=args.checkpoint_dir, num_outputs=args.outputs,
                     alpha=args.alpha, beta=args.beta, lambd=args.lambd)
+    resumed_from = None
     if args.resume:
+        resumed_from = "ckpt-%d" % net.checkpoint_numbers()[-1] if net.checkpoint_numbers() else None
         net.load()
         if args.start_game is not None:
             start = args.start_game
@@ -203,10 +242,18 @@ def main():
                                                "or pick another --checkpoint-dir.")
         start = args.start_game or 0
         print("Starting a new", args.outputs, "output network in", args.checkpoint_dir)
-    print("Learning rates: alpha %.4g, beta %.4g, lambda %.3g" % net.learning_rates)
+    alpha, beta, lambd = net.learning_rates
+    print("Learning rates: alpha %.4g, beta %.4g, lambda %.3g" % (alpha, beta, lambd))
+    if net.saved_rates and net.saved_rates != (alpha, beta, lambd):
+        print("  (changed from alpha %.4g, beta %.4g, lambda %.3g in %s)" % (net.saved_rates + (resumed_from,)))
+    print("Seed", args.seed)
+    log_session(args.checkpoint_dir, {
+        "time": datetime.now().isoformat(timespec="seconds"), "start_game": start, "games": args.games,
+        "alpha": alpha, "beta": beta, "lambda": lambd, "seed": args.seed, "outputs": net.num_outputs,
+        "resumed_from": resumed_from, "commit": git_commit(), "command": " ".join(sys.argv)})
 
-    Backgammon.train(net, args.games, start_trial=start,
-                     save_every=args.save_every, benchmark_games=args.benchmark_games)
+    Backgammon.train(net, args.games, start_trial=start, save_every=args.save_every,
+                     benchmark_games=args.benchmark_games, seed=args.seed)
 
 
 if __name__ == "__main__":

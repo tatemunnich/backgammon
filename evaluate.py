@@ -9,7 +9,10 @@ Examples:
     python evaluate.py --opponents previous,tate --tate-games 200
     python evaluate.py --watch                           # keep evaluating new checkpoints as training saves them
 
-Results are printed and appended to <checkpoint-dir>/eval.csv.
+Results are printed and appended to <checkpoint-dir>/eval.csv, with the learning rates the
+checkpoint was trained with (blank for checkpoints saved before rates were recorded) and the
+dice seed. With the same --seed, every match uses the same dice sequences: pair p always rolls
+from (seed, p), whichever checkpoints are playing. Use another --seed for a fresh set of rolls.
 """
 import argparse
 import csv
@@ -27,8 +30,8 @@ from players.NeuralNetPlayer import NeuralNetPlayer, NeuralNet
 from players.RandomPlayer import RandomPlayer
 from players.TatePlayer import TatePlayer
 
-CSV_FIELDS = ["time", "checkpoint", "games_trained", "opponent", "games",
-              "win_pct", "points_per_game", "ci95"]
+CSV_FIELDS = ["time", "checkpoint", "games_trained", "alpha", "beta", "lambda", "opponent", "games",
+              "win_pct", "points_per_game", "ci95", "seed"]
 
 
 def load_net(checkpoint_dir, num):
@@ -101,10 +104,30 @@ def make_opponent(name, checkpoint_dir, num, available):
 
 
 def already_done(csv_path):
+    """(checkpoint, opponent, seed) for every row in the results file. Rows from before the
+    seed column existed count as seed 0, the default."""
     if not os.path.exists(csv_path):
         return set()
     with open(csv_path, newline="") as f:
-        return {(row["checkpoint"], row["opponent"]) for row in csv.DictReader(f)}
+        return {(row["checkpoint"], row["opponent"], row.get("seed") or "0") for row in csv.DictReader(f)}
+
+
+def upgrade_csv(csv_path):
+    """Rewrite a results file written with older columns so new rows line up. Old rows keep their
+    values; columns they didn't have are left blank."""
+    if not os.path.exists(csv_path):
+        return
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames == CSV_FIELDS:
+            return
+        rows = list(reader)
+    tmp = csv_path + ".tmp"
+    with open(tmp, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(tmp, csv_path)
 
 
 def append_row(csv_path, row):
@@ -125,7 +148,7 @@ def evaluate_checkpoint(args, num, csv_path, done, available):
         if opponent is None:
             continue
         opp_label, make_b = opponent
-        if args.skip_done and ("ckpt-%d" % num, opp_label) in done:
+        if args.skip_done and ("ckpt-%d" % num, opp_label, str(args.seed)) in done:
             continue
         total = args.tate_games if name == "tate" else args.games
         pairs = max(1, total // 2)
@@ -134,11 +157,14 @@ def evaluate_checkpoint(args, num, csv_path, done, available):
         games, win_pct, ppg, ci = summarize(results)
         print("%-22s vs %-9s %5d games  wins %5.1f%%  points/game %+.3f ± %.3f  (%.0fs)"
               % (label, opp_label, games, win_pct, ppg, ci, time.time() - start), flush=True)
+        alpha, beta, lambd = ("%.4g" % r for r in net.saved_rates) if net.saved_rates else ("", "", "")
         append_row(csv_path, {
             "time": datetime.now().isoformat(timespec="seconds"), "checkpoint": "ckpt-%d" % num,
-            "games_trained": trained if trained is not None else "", "opponent": opp_label, "games": games,
-            "win_pct": "%.2f" % win_pct, "points_per_game": "%.4f" % ppg, "ci95": "%.4f" % ci})
-        done.add(("ckpt-%d" % num, opp_label))
+            "games_trained": trained if trained is not None else "",
+            "alpha": alpha, "beta": beta, "lambda": lambd, "opponent": opp_label, "games": games,
+            "win_pct": "%.2f" % win_pct, "points_per_game": "%.4f" % ppg, "ci95": "%.4f" % ci,
+            "seed": args.seed})
+        done.add(("ckpt-%d" % num, opp_label, str(args.seed)))
 
 
 def pick_checkpoints(spec, available):
@@ -174,6 +200,7 @@ def main():
     csv_path = args.csv or os.path.join(args.checkpoint_dir, "eval.csv")
 
     probe = NeuralNet(checkpoint_dir=args.checkpoint_dir)
+    upgrade_csv(csv_path)
     done = already_done(csv_path)
     if not args.watch:
         available = probe.checkpoint_numbers()
