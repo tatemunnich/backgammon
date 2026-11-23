@@ -310,32 +310,33 @@ class Board:
             return False
         return inHome(color, self.farthestBack(color))
 
+    def gameValue(self, winner):
+        """Points won by `winner`: 1 single, 2 gammon, 3 backgammon.
+
+        Gammon: the loser has not borne off any checkers.
+        Backgammon: a gammon where the loser also still has a checker on the bar
+        or in the winner's home board.
+        """
+        loser = getOtherColor(winner)
+        if self.numOff(loser) > 0:
+            return 1
+        if self.numBar(loser) > 0 or inHome(winner, self.farthestBack(loser)):
+            return 3
+        return 2
+
     def getWinner(self, game_value=False):
         if self.pointsContent[0] == 15:
-            if game_value:
-                value = 1
-                if not self.allInHome(WHITE):
-                    value = 2
-                    if self.numBar(WHITE) > 0 or inHome(BLACK, self.farthestBack(WHITE)):
-                        value = 3
-                return BLACK, value
-            else:
-                return BLACK
+            winner = BLACK
         elif self.pointsContent[25] == -15:
-            if game_value:
-                value = 1
-                if not self.allInHome(BLACK):
-                    value = 2
-                    if self.numBar(BLACK) > 0 or inHome(WHITE, self.farthestBack(BLACK)):
-                        value = 3
-                return WHITE, value
-            else:
-                return WHITE
+            winner = WHITE
         else:
-            if game_value:
-                return NONE, 1
-            else:
-                return NONE
+            winner = NONE
+
+        if not game_value:
+            return winner
+        if winner == NONE:
+            return NONE, 1
+        return winner, self.gameValue(winner)
 
     def pips(self, color):
         points = self.getCheckers(color)
