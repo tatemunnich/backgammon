@@ -12,3 +12,6 @@
 
 # Training output
 checkpoints/
+.venv/
+__pycache__/
+*.pyc
