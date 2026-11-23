@@ -1,6 +1,7 @@
 import json
+import math
 import tensorflow as tf
-from board.Board import getPieceSymbol, BLACK, Board, WHITE, getOtherColor
+from board.Board import getPieceSymbol, BLACK, Board, WHITE, getOtherColor, NONE
 from move.MovementFactory import generate_moves
 from players.Player import Player
 
@@ -32,64 +33,43 @@ class NeuralNetPlayer(Player):
 
         board = backgammon.board
         moves = generate_moves(board, to_move, backgammon.dice)
-        best, value, output = None, -1000000, None
+        best, value, target = None, -math.inf, None
         for move in moves:
-            new_value, new_output = self.evaluate(move.board_after, next_player, to_move)
-            # print(move, " with value", new_value)
+            winner, game_value = move.board_after.getWinner(game_value=True)
+            if winner != NONE:
+                # The game ends here: score the move by its real result, not the network's guess.
+                new_output = self.outcome_outputs(winner, game_value)
+                new_value = self.value_for(new_output, to_move)
+            else:
+                new_value, new_output = self.evaluate(move.board_after, next_player, to_move)
             if new_value > value:
                 best = move
                 value = new_value
-                output = new_output
+                target = new_output
 
         if self.learning:
+            # TD step: move V(current position) toward V(chosen next position). When the chosen
+            # move wins, the target is the true outcome, so this is also the final update of the game.
             self.evaluate(board, to_move, to_move)
-            self.network.backprop(output)
+            self.network.backprop(target)
 
         return best
 
-    def lost(self, board, value):
+    def new_game(self):
         if self.learning:
-            if self.network.num_outputs == 1:
-                if self.color == BLACK:
-                    expected = tf.constant([[0.]])
-                elif self.color == WHITE:
-                    expected = tf.constant([[1.]])
-            elif self.network.num_outputs == 4:
-                if self.color == BLACK:
-                    if value == 1:
-                        expected = tf.constant([[0., 0., 1., 0.]])
-                    else:
-                        expected = tf.constant([[0., 0., 0., 1.]])
-                elif self.color == WHITE:
-                    if value == 1:
-                        expected = tf.constant([[1., 0., 0., 0.]])
-                    else:
-                        expected = tf.constant([[0., 1., 0., 0.]])
+            self.network.reset_traces()
 
-            self.evaluate(board, self.color, self.color)
-            self.network.backprop(expected)
-
-    def won(self, board, value):
-        if self.learning:
-            if self.network.num_outputs == 1:
-                if self.color == BLACK:
-                    expected = tf.constant([[1.]])
-                elif self.color == WHITE:
-                    expected = tf.constant([[0.]])
-            elif self.network.num_outputs == 4:
-                if self.color == WHITE:
-                    if value == 1:
-                        expected = tf.constant([[0., 0., 1., 0.]])
-                    else:
-                        expected = tf.constant([[0., 0., 0., 1.]])
-                elif self.color == BLACK:
-                    if value == 1:
-                        expected = tf.constant([[1., 0., 0., 0.]])
-                    else:
-                        expected = tf.constant([[0., 1., 0., 0.]])
-
-            self.evaluate(board, getOtherColor(self.color), self.color)
-            self.network.backprop(expected)
+    def outcome_outputs(self, winner, game_value):
+        """The network output a finished game should have produced."""
+        if self.network.num_outputs == 1:  # P(black wins)
+            return tf.constant([[1.]]) if winner == BLACK else tf.constant([[0.]])
+        elif self.network.num_outputs == 4:  # black win, black gammon, white win, white gammon
+            gammon = game_value > 1
+            if winner == BLACK:
+                return tf.constant([[0., 1., 0., 0.]]) if gammon else tf.constant([[1., 0., 0., 0.]])
+            else:
+                return tf.constant([[0., 0., 0., 1.]]) if gammon else tf.constant([[0., 0., 1., 0.]])
+        raise Exception("Could not evaluate output shape")
 
     def __str__(self):
         return self.name + " (" + getPieceSymbol(self.color) + ")"
@@ -134,18 +114,21 @@ class NeuralNetPlayer(Player):
     def evaluate(self, board, color_to_move, color):
         x = self.get_input_vector(board, color_to_move)
         outputs = self.network.calculate(x)
+        return self.value_for(outputs, color), outputs
+
+    def value_for(self, outputs, color):
+        """Equity of `outputs` from `color`'s point of view."""
         if self.network.num_outputs == 1:
             if color == BLACK:
-                return outputs[0][0], outputs
+                return outputs[0][0]
             elif color == WHITE:
-                return 1 - outputs[0][0], outputs
+                return 1 - outputs[0][0]
         elif self.network.num_outputs == 4:  # black win, black gammon, white win, white gammon
             if color == BLACK:
-                return outputs[0][0] + 2*outputs[0][1] - outputs[0][2] - 2*outputs[0][3], outputs
+                return outputs[0][0] + 2*outputs[0][1] - outputs[0][2] - 2*outputs[0][3]
             elif color == WHITE:
-                return -outputs[0][0] - 2*outputs[0][1] + outputs[0][2] + 2*outputs[0][3], outputs
-        else:
-            raise Exception("Could not evaluate output shape")
+                return -outputs[0][0] - 2*outputs[0][1] + outputs[0][2] + 2*outputs[0][3]
+        raise Exception("Could not evaluate output shape")
 
 
 class NeuralNet:
@@ -172,6 +155,11 @@ class NeuralNet:
         self.save_traces = save_traces
         self.ew = tf.Variable(tf.zeros(shape=(num_hidden, num_outputs)))  # shape (num_hidden, num_outputs)
         self.ev = tf.Variable(tf.zeros(shape=(num_inputs, num_hidden, num_outputs)))  # shape (num_inputs, num_hidden, num_outputs)
+
+    def reset_traces(self):
+        """Zero the eligibility traces. Call at the start of every training game."""
+        self.ew = tf.zeros(shape=(self.num_hidden, self.num_outputs))
+        self.ev = tf.zeros(shape=(self.num_inputs, self.num_hidden, self.num_outputs))
 
     def randomize_weights(self):
         self.hidden_weights = tf.Variable(tf.random.uniform(minval=-1., maxval=1.,

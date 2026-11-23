@@ -44,6 +44,8 @@ class Backgammon:
         self.dice.setRoll((player1_roll, player2_roll))
 
     def run(self, verbose=False):
+        for player in self.players:
+            player.new_game()
         self.start_game(verbose=verbose)
         if verbose:
             print(self.board)
