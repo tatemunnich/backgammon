@@ -21,8 +21,18 @@ class Backgammon:
             raise Exception("Must have one player of each color")
         self.players = [player1, player2]
         self.board = Board()
-        self.dice = Dice()
+        self.rng = random  # source of dice rolls; see set_dice_seed()
+        self.dice = Dice(rng=self.rng)
         self.on_roll = 0  # starting player 1
+
+    def set_dice_seed(self, seed):
+        """Roll this game's dice from their own random stream, separate from any player's randomness.
+
+        Two games given the same seed get the same sequence of rolls, which is what lets
+        evaluate.py replay a game with the players' seats swapped.
+        """
+        self.rng = random.Random(seed)
+        self.dice.rng = self.rng
 
     def reset(self):
         self.board = Board()
@@ -39,8 +49,8 @@ class Backgammon:
     def start_game(self, verbose=False):
         player1_roll, player2_roll = 0, 0
         while player1_roll == player2_roll:
-            player1_roll = random.randint(1, 6)
-            player2_roll = random.randint(1, 6)
+            player1_roll = self.rng.randint(1, 6)
+            player2_roll = self.rng.randint(1, 6)
             if verbose:
                 print(self.players[0], "rolls", str(player1_roll) + ",", self.players[1], "rolls", str(player2_roll) + ".")
         self.on_roll = 0 if player1_roll > player2_roll else 1
@@ -96,19 +106,29 @@ class Backgammon:
 
     @staticmethod
     def train(network, iters, start_trial=0, verbose=False, save_every=1000, benchmark_games=15):
+        """Self-play training. Every save_every games: save a checkpoint and a <game>.txt snapshot,
+        then (if benchmark_games > 0) play that many games against Tate Jr. For larger, less noisy
+        comparisons, use --benchmark-games 0 and run evaluate.py alongside."""
         p1, p2 = NeuralNetPlayer(BLACK, network, learning=True), NeuralNetPlayer(WHITE, network, learning=True)
         backgammon = Backgammon(p1, p2)
         for i in range(1, iters+1):
             winner, _ = backgammon.run()
             backgammon.reset()
             print("\rGame", i+start_trial, "finished", end="")
-            if i % save_every == 0:
-                p1.network.save()
+            if i == iters and i % save_every != 0:
+                # Last game but not on a save boundary: save anyway so these games aren't lost.
+                path = p1.network.save(games=i + start_trial)
                 p1.network.save_to_text(str(i+start_trial)+".txt")
-                p1.learning = False
-                print("\nAfter", i + start_trial, "rounds of training:")
-                Backgammon.benchmark(p1, TatePlayer(WHITE), benchmark_games)
-                p1.learning = True
+                print("\nSaved", os.path.basename(path), "after", i + start_trial, "games")
+            if i % save_every == 0:
+                path = p1.network.save(games=i + start_trial)
+                p1.network.save_to_text(str(i+start_trial)+".txt")
+                print("\nSaved", os.path.basename(path), "after", i + start_trial, "games")
+                if benchmark_games > 0:
+                    p1.learning = False
+                    print("After", i + start_trial, "rounds of training:")
+                    Backgammon.benchmark(p1, TatePlayer(WHITE), benchmark_games)
+                    p1.learning = True
 
     @staticmethod
     def benchmark(player1, player2, num_games):
@@ -151,19 +171,31 @@ def main():
                         help="continue from the latest checkpoint in --checkpoint-dir")
     parser.add_argument("--start-game", type=int, default=None,
                         help="game number to count from (default: 0, or the last snapshot when resuming)")
-    parser.add_argument("--save-every", type=int, default=1000, help="save and benchmark every N games")
-    parser.add_argument("--benchmark-games", type=int, default=15, help="games against Tate Jr. per benchmark")
+    parser.add_argument("--save-every", type=int, default=1000, help="save (and benchmark) every N games")
+    parser.add_argument("--benchmark-games", type=int, default=15, help="games against Tate Jr. after each save; 0 to skip (use evaluate.py instead)")
     parser.add_argument("--seed", type=int, default=None, help="random seed, for repeatable runs")
+    parser.add_argument("--alpha", type=float, default=None,
+                        help="hidden-layer learning rate (default 1/198, about 0.005)")
+    parser.add_argument("--beta", type=float, default=None,
+                        help="output-layer learning rate (default 1/40 = 0.025)")
+    parser.add_argument("--lambda", dest="lambd", type=float, default=NeuralNet.DEFAULT_LAMBDA,
+                        help="eligibility trace decay, 0-1 (default %(default)s)")
     args = parser.parse_args()
 
     if args.seed is not None:
         random.seed(args.seed)
         np.random.seed(args.seed)
 
-    net = NeuralNet(checkpoint_dir=args.checkpoint_dir, num_outputs=args.outputs)
+    net = NeuralNet(checkpoint_dir=args.checkpoint_dir, num_outputs=args.outputs,
+                    alpha=args.alpha, beta=args.beta, lambd=args.lambd)
     if args.resume:
         net.load()
-        start = last_saved_game(args.checkpoint_dir) if args.start_game is None else args.start_game
+        if args.start_game is not None:
+            start = args.start_game
+        elif net.games_trained is not None:  # recorded in the checkpoint
+            start = net.games_trained
+        else:  # older checkpoints: fall back to the newest <game>.txt snapshot
+            start = last_saved_game(args.checkpoint_dir)
         print("Resuming", net.num_outputs, "output network from", args.checkpoint_dir, "at game", start)
     else:
         if net.checkpoint_numbers():
@@ -171,6 +203,7 @@ def main():
                                                "or pick another --checkpoint-dir.")
         start = args.start_game or 0
         print("Starting a new", args.outputs, "output network in", args.checkpoint_dir)
+    print("Learning rates: alpha %.4g, beta %.4g, lambda %.3g" % net.learning_rates)
 
     Backgammon.train(net, args.games, start_trial=start,
                      save_every=args.save_every, benchmark_games=args.benchmark_games)

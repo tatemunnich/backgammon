@@ -3,20 +3,22 @@ import random
 
 class Dice:
 
-	def __init__(self, die1=None, die2=None):
+	def __init__(self, die1=None, die2=None, rng=None):
+		# rng: a random.Random to roll with (default: the global random module)
+		self.rng = rng if rng is not None else random
 		if die1 is None:
-			self.die1 = random.randint(1, 6)
+			self.die1 = self.rng.randint(1, 6)
 		else:
 			self.die1 = die1
 
 		if die2 is None:
-			self.die2 = random.randint(1, 6)
+			self.die2 = self.rng.randint(1, 6)
 		else:
 			self.die2 = die2
 
 	def roll(self):
-		self.die1 = random.randint(1, 6)
-		self.die2 = random.randint(1, 6)
+		self.die1 = self.rng.randint(1, 6)
+		self.die2 = self.rng.randint(1, 6)
 
 	def rollNoDoubles(self):
 		self.roll()

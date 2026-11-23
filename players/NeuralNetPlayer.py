@@ -143,8 +143,15 @@ class NeuralNet:
     # +-1 range started units around +-3, already close to saturated.
     INIT_RANGE = 0.1
 
+    # Default TD(lambda) settings, as specified in Gettysburg PA4.
+    DEFAULT_LAMBDA = 0.6
+
     def __init__(self, checkpoint_dir, num_inputs=198, num_hidden=40, num_outputs=1,
-                 hidden_weights=None, second_weights=None, save_traces=False):
+                 hidden_weights=None, second_weights=None, save_traces=False,
+                 alpha=None, beta=None, lambd=DEFAULT_LAMBDA):
+        """alpha: hidden-layer learning rate (default 1/num_inputs).
+        beta: output-layer learning rate (default 1/num_hidden).
+        lambd: eligibility trace decay per step."""
         self.inputs = None  # shape (1, num_inputs)
         self.hidden_outputs = None  # shape (1, num_hidden)
         self.outputs = None  # shape (1, num_outputs)
@@ -161,7 +168,18 @@ class NeuralNet:
 
         self.checkpoint_dir = checkpoint_dir
         self.save_traces = save_traces
+        self.alpha = alpha
+        self.beta = beta
+        self.lambd = lambd
+        self.games_trained = None  # set by load() when the checkpoint recorded it
         self.reset_traces()
+
+    @property
+    def learning_rates(self):
+        """(alpha, beta, lambda) actually used by backprop()."""
+        alpha = self.alpha if self.alpha is not None else 1 / self.num_inputs
+        beta = self.beta if self.beta is not None else 1 / self.num_hidden
+        return alpha, beta, self.lambd
 
     def reset_traces(self):
         """Zero the eligibility traces. Call at the start of every training game."""
@@ -203,15 +221,22 @@ class NeuralNet:
                     numbers.append(int(match.group(1)))
         return sorted(numbers)
 
-    def save(self):
+    def save(self, games=None):
+        """Write the next numbered checkpoint. `games` (games trained so far) is stored with it."""
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         numbers = self.checkpoint_numbers()
         num = numbers[-1] + 1 if numbers else 1
         arrays = {"hidden": self.hidden_weights, "second": self.second_weights}
+        if games is not None:
+            arrays["games"] = np.array(games)
         if self.save_traces:
             arrays.update(ew=self.ew, ev=self.ev)
         path = os.path.join(self.checkpoint_dir, "ckpt-%d.npz" % num)
-        np.savez(path, **arrays)
+        # Write to a temporary file and rename, so a reader never sees a half-written checkpoint.
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            np.savez(f, **arrays)
+        os.replace(tmp, path)
         return path
 
     def save_to_text(self, filename):
@@ -239,6 +264,7 @@ class NeuralNet:
         self.second_weights = np.array(saved["second"], dtype=float)
         self.num_inputs, self.num_hidden = self.hidden_weights.shape
         self.num_outputs = self.second_weights.shape[1]
+        self.games_trained = int(saved["games"]) if "games" in saved else None
         if "ew" in saved and "ev" in saved:
             self.ew = np.array(saved["ew"], dtype=float)
             self.ev = np.array(saved["ev"], dtype=float)
@@ -261,9 +287,7 @@ class NeuralNet:
         As specified in Gettysburg PA4: ew and ev are eligibility traces for the output and
         hidden weights, decayed by lambda each step.
         """
-        lambd = 0.6
-        alpha = 1 / self.num_inputs
-        beta = 1 / self.num_hidden
+        alpha, beta, lambd = self.learning_rates
         out_slope = self.gradient(self.outputs)  # (1, O)
         # d output_k / d second_weights[j, k] = h_j * y_k(1 - y_k)            -> (H, O)
         self.ew = lambd * self.ew + np.tensordot(self.hidden_outputs, out_slope, axes=[0, 0])
