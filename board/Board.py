@@ -45,11 +45,13 @@ class Board:
 
     def __init__(self, pointsContent=None, blackCheckers=None, whiteCheckers=None,
                  blackCheckersTaken=0, whiteCheckersTaken=0, doubleCube=1, doublePossession=NONE):
-        if whiteCheckers is None:
-            whiteCheckers = {1, 12, 17, 19}
-        if blackCheckers is None:
-            blackCheckers = {24, 13, 8, 6}
+        """With no pointsContent, the starting position. If pointsContent is given without
+        blackCheckers/whiteCheckers, those sets are worked out from it the first time they're used."""
         if pointsContent is None:
+            if whiteCheckers is None:
+                whiteCheckers = {1, 12, 17, 19}
+            if blackCheckers is None:
+                blackCheckers = {24, 13, 8, 6}
             pointsContent = [0] * 26
             pointsContent[1] = -2
             pointsContent[12] = -5
@@ -70,16 +72,38 @@ class Board:
         self.doubleCube = doubleCube
         self.doublePossession = doublePossession
 
+    # The points each color occupies (1-24). Derived from pointsContent; built on first use, since
+    # boards made by the move generator are often only ever read through pointsContent.
+    @property
+    def blackCheckers(self):
+        if self._blackCheckers is None:
+            self._blackCheckers = {p for p in range(1, 25) if self.pointsContent[p] > 0}
+        return self._blackCheckers
+
+    @blackCheckers.setter
+    def blackCheckers(self, value):
+        self._blackCheckers = value
+
+    @property
+    def whiteCheckers(self):
+        if self._whiteCheckers is None:
+            self._whiteCheckers = {p for p in range(1, 25) if self.pointsContent[p] < 0}
+        return self._whiteCheckers
+
+    @whiteCheckers.setter
+    def whiteCheckers(self, value):
+        self._whiteCheckers = value
+
     def __deepcopy__(self, memo={}):
-        _copy = type(self)(copy(self.pointsContent), copy(self.blackCheckers),
-                           copy(self.whiteCheckers), self.blackCheckersTaken, self.whiteCheckersTaken,
+        _copy = type(self)(copy(self.pointsContent), copy(self._blackCheckers),
+                           copy(self._whiteCheckers), self.blackCheckersTaken, self.whiteCheckersTaken,
                            self.doubleCube, self.doublePossession)
         return _copy
 
     def applyBoard(self, other_board):
         self.pointsContent = other_board.pointsContent
-        self.whiteCheckers = other_board.whiteCheckers
-        self.blackCheckers = other_board.blackCheckers
+        self.whiteCheckers = other_board._whiteCheckers
+        self.blackCheckers = other_board._blackCheckers
         self.blackCheckersTaken = other_board.blackCheckersTaken
         self.whiteCheckersTaken = other_board.whiteCheckersTaken
         self.doubleCube = other_board.doubleCube
@@ -251,12 +275,12 @@ class Board:
                 location) + " of color " + getOtherColor(color))
         if color == BLACK:
             self.pointsContent[location] += 1
-            if self.pointsContent[location] == 1:
-                self.blackCheckers.add(location)
+            if self.pointsContent[location] == 1 and self._blackCheckers is not None:
+                self._blackCheckers.add(location)
         elif color == WHITE:
             self.pointsContent[location] -= 1
-            if self.pointsContent[location] == -1:
-                self.whiteCheckers.add(location)
+            if self.pointsContent[location] == -1 and self._whiteCheckers is not None:
+                self._whiteCheckers.add(location)
 
     def removeFromLocation(self, color, location):
         if self.colorAt(location) != color:
@@ -264,12 +288,12 @@ class Board:
                 "Unexpected error - no pieces at location " + str(location) + " of color " + color)
         if color == BLACK:
             self.pointsContent[location] -= 1
-            if self.pointsContent[location] == 0:
-                self.blackCheckers.remove(location)
+            if self.pointsContent[location] == 0 and self._blackCheckers is not None:
+                self._blackCheckers.remove(location)
         elif color == WHITE:
             self.pointsContent[location] += 1
-            if self.pointsContent[location] == 0:
-                self.whiteCheckers.remove(location)
+            if self.pointsContent[location] == 0 and self._whiteCheckers is not None:
+                self._whiteCheckers.remove(location)
 
     def moveToBar(self, color):
         if color == BLACK:
